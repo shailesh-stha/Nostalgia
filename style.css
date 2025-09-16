@@ -1,0 +1,67 @@
+body {
+    background-color: #1a1a1a;
+    color: #fff;
+    font-family: Arial, sans-serif;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    height: 100vh;
+    margin: 0;
+    overflow: hidden; /* Prevents scrollbars on mobile */
+}
+
+/* This container is new - it helps position the controls relative to the canvas */
+#game-container {
+    position: relative;
+    border: 2px solid #fff;
+}
+
+canvas {
+    background-color: #000;
+    display: block; /* Removes extra space below the canvas */
+}
+
+/* --- MOBILE TOUCH CONTROLS --- */
+/* Hide controls by default */
+.mobile-only {
+    display: none;
+}
+
+/* Only show controls on devices that are unlikely to have a mouse (i.e., touch devices) */
+@media (pointer: coarse) {
+    .mobile-only {
+        display: block;
+    }
+
+    #touch-controls {
+        position: absolute;
+        bottom: 20px;
+        width: 100%;
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-end;
+        box-sizing: border-box;
+        padding: 0 30px;
+        /* Make sure clicks "pass through" the container but not the buttons */
+        pointer-events: none;
+    }
+
+    #touch-controls button {
+        width: 80px;
+        height: 80px;
+        background: rgba(255, 255, 255, 0.3);
+        border: 2px solid rgba(255, 255, 255, 0.5);
+        color: white;
+        font-size: 36px;
+        border-radius: 50%;
+        pointer-events: auto; /* Buttons are clickable */
+        user-select: none; /* Prevents text selection on hold */
+        -webkit-user-select: none; /* For Safari */
+    }
+
+    .d-pad {
+        display: flex;
+        gap: 20px;
+    }
+}

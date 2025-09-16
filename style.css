@@ -11,7 +11,6 @@ body {
     overflow: hidden; /* Prevents scrollbars on mobile */
 }
 
-/* This container is new - it helps position the controls relative to the canvas */
 #game-container {
     position: relative;
     border: 2px solid #fff;
@@ -22,13 +21,31 @@ canvas {
     display: block; /* Removes extra space below the canvas */
 }
 
+#pause-btn {
+    position: absolute;
+    top: 15px;
+    right: 15px;
+    width: 50px;
+    height: 50px;
+    background: rgba(255, 255, 255, 0.3);
+    border: 2px solid rgba(255, 255, 255, 0.5);
+    color: white;
+    font-size: 24px;
+    border-radius: 8px;
+    cursor: pointer;
+    z-index: 10; /* Make sure it's on top of the canvas */
+}
+
+.ingame-only {
+    display: none; /* Hidden by default */
+}
+
+
 /* --- MOBILE TOUCH CONTROLS --- */
-/* Hide controls by default */
 .mobile-only {
     display: none;
 }
 
-/* Only show controls on devices that are unlikely to have a mouse (i.e., touch devices) */
 @media (pointer: coarse) {
     .mobile-only {
         display: block;
@@ -43,7 +60,6 @@ canvas {
         align-items: flex-end;
         box-sizing: border-box;
         padding: 0 30px;
-        /* Make sure clicks "pass through" the container but not the buttons */
         pointer-events: none;
     }
 

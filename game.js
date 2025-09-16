@@ -5,9 +5,9 @@ const pauseBtn = document.getElementById('pause-btn');
 
 // -- GAME CONSTANTS & VARIABLES --
 const TILE_SIZE = 40;
-const GRAVITY = 0.5;
-const PLAYER_SPEED = 5;
-const JUMP_POWER = 12;
+const GRAVITY = 0.3;
+const PLAYER_SPEED = 4;
+const JUMP_POWER = 8;
 
 let score = 0;
 let currentLevelIndex = 0;
@@ -166,7 +166,7 @@ const resumeBtn = { x: canvas.width / 2 - 100, y: canvas.height / 2 - 25, width:
 const exitBtn = { x: canvas.width / 2 - 100, y: canvas.height / 2 + 45, width: 200, height: 50 };
 
 // -- KEYBOARD & TOUCH INPUT --
-const keys = { ArrowLeft: false, ArrowRight: false, ArrowUp: false };
+const keys = { ArrowLeft: false, ArrowRight: false, ArrowUp: false, Space: false };
 
 window.addEventListener('keydown', (e) => {
     if ((gameState === 'HOME' || gameState === 'GAME_OVER') && e.code === 'Enter') {
@@ -266,7 +266,7 @@ function drawGame() {
                     ctx.fillRect(tileX + 10, tileY + 10, TILE_SIZE - 20, TILE_SIZE - 20);
                 }
             } else if (tile === 3) {
-                const coinSize = TILE_SIZE * 0.8;
+                const coinSize = TILE_SIZE * 0.5;
                 const offset = (TILE_SIZE - coinSize) / 2;
                 if (assets.coin && assets.coin.complete && assets.coin.naturalHeight !== 0) {
                     ctx.drawImage(assets.coin, tileX + offset, tileY + offset, coinSize, coinSize);
@@ -454,7 +454,8 @@ function update() {
         player.velocityX = PLAYER_SPEED;
         player.direction = 1;
     }
-    if (keys.ArrowUp && !player.isJumping) {
+// Check for jump input from either ArrowUp or Space
+    if ((keys.ArrowUp || keys.Space) && !player.isJumping) {
         player.velocityY = -JUMP_POWER;
         player.isJumping = true;
     }

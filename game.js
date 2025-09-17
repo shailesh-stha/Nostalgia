@@ -9,6 +9,8 @@ const GRAVITY = 0.3;
 const PLAYER_SPEED = 4;
 const JUMP_POWER = 8;
 const BULLET_SPEED = 8;
+const FRICTION = 0.75; // New: For player deceleration
+const MAX_JUMP_TIME = 15; // New: For variable jump height
 
 // -- PLAYER CLASS --
 class Player {
@@ -20,25 +22,38 @@ class Player {
         this.velocityX = 0;
         this.velocityY = 0;
         this.isJumping = false;
+        this.isOnGround = false; // New: To correctly handle jumping
         this.direction = 1; // 1 for right, -1 for left
         this.color = color;
+        this.jumpTimer = 0; // New: For variable jump height
     }
 
     // Handle player's movement and physics
     update(map, tile_size) {
-        // Player movement logic (from old update function)
-        this.velocityX = 0;
+        // Player horizontal movement and deceleration
         if (keys.ArrowLeft || keys.KeyA) {
             this.velocityX = -PLAYER_SPEED;
             this.direction = -1;
-        }
-        if (keys.ArrowRight || keys.KeyD) {
+        } else if (keys.ArrowRight || keys.KeyD) {
             this.velocityX = PLAYER_SPEED;
             this.direction = 1;
+        } else {
+            this.velocityX *= FRICTION; // Apply friction when no key is pressed
         }
-        if ((keys.ArrowUp || keys.Space || keys.KeyW) && !this.isJumping) {
-            this.velocityY = -JUMP_POWER;
-            this.isJumping = true;
+
+        // Variable jump height logic
+        if ((keys.ArrowUp || keys.Space || keys.KeyW)) {
+            if (this.isOnGround) {
+                this.velocityY = -JUMP_POWER;
+                this.isJumping = true;
+                this.isOnGround = false;
+                this.jumpTimer = 0;
+            } else if (this.isJumping && this.jumpTimer < MAX_JUMP_TIME) {
+                this.velocityY -= 0.5; // Small upward boost for variable height
+                this.jumpTimer++;
+            }
+        } else {
+            this.isJumping = false; // Stop boosting if key is released
         }
 
         this.velocityY += GRAVITY;
@@ -54,6 +69,7 @@ class Player {
                     if (checkCollision(this, { x: tileX, y: tileY, width: tile_size, height: tile_size })) {
                         if (this.velocityX > 0) this.x = tileX - this.width;
                         if (this.velocityX < 0) this.x = tileX + tile_size;
+                        this.velocityX = 0; // Stop horizontal movement on collision
                     }
                 }
             }
@@ -61,6 +77,7 @@ class Player {
 
         // Y-axis movement and collision
         this.y += this.velocityY;
+        this.isOnGround = false; // Assume not on ground unless collision proves otherwise
         for (let row = 0; row < map.length; row++) {
             for (let col = 0; col < map[row].length; col++) {
                 const tile = map[row][col];
@@ -70,10 +87,13 @@ class Player {
                     if (checkCollision(this, { x: tileX, y: tileY, width: tile_size, height: tile_size })) {
                         if (this.velocityY > 0) {
                             this.y = tileY - this.height;
-                            this.isJumping = false;
+                            this.velocityY = 0;
+                            this.isOnGround = true; // Player is on the ground
                         }
-                        if (this.velocityY < 0) this.y = tileY + tile_size;
-                        this.velocityY = 0;
+                        if (this.velocityY < 0) {
+                            this.y = tileY + tile_size;
+                            this.velocityY = 0;
+                        }
                     }
                 }
             }

@@ -8,10 +8,131 @@ const TILE_SIZE = 40;
 const GRAVITY = 0.3;
 const PLAYER_SPEED = 4;
 const JUMP_POWER = 8;
+const BULLET_SPEED = 8;
+
+// -- PLAYER CLASS --
+class Player {
+    constructor(x, y, width, height, color) {
+        this.x = x;
+        this.y = y;
+        this.width = width;
+        this.height = height;
+        this.velocityX = 0;
+        this.velocityY = 0;
+        this.isJumping = false;
+        this.direction = 1; // 1 for right, -1 for left
+        this.color = color;
+    }
+
+    // Handle player's movement and physics
+    update(map, tile_size) {
+        // Player movement logic (from old update function)
+        this.velocityX = 0;
+        if (keys.ArrowLeft || keys.KeyA) {
+            this.velocityX = -PLAYER_SPEED;
+            this.direction = -1;
+        }
+        if (keys.ArrowRight || keys.KeyD) {
+            this.velocityX = PLAYER_SPEED;
+            this.direction = 1;
+        }
+        if ((keys.ArrowUp || keys.Space || keys.KeyW) && !this.isJumping) {
+            this.velocityY = -JUMP_POWER;
+            this.isJumping = true;
+        }
+
+        this.velocityY += GRAVITY;
+
+        // X-axis movement and collision
+        this.x += this.velocityX;
+        for (let row = 0; row < map.length; row++) {
+            for (let col = 0; col < map[row].length; col++) {
+                const tile = map[row][col];
+                if (tile === 1 || tile === 7) {
+                    const tileX = col * tile_size;
+                    const tileY = row * tile_size;
+                    if (checkCollision(this, { x: tileX, y: tileY, width: tile_size, height: tile_size })) {
+                        if (this.velocityX > 0) this.x = tileX - this.width;
+                        if (this.velocityX < 0) this.x = tileX + tile_size;
+                    }
+                }
+            }
+        }
+
+        // Y-axis movement and collision
+        this.y += this.velocityY;
+        for (let row = 0; row < map.length; row++) {
+            for (let col = 0; col < map[row].length; col++) {
+                const tile = map[row][col];
+                if (tile === 1 || tile === 7) {
+                    const tileX = col * tile_size;
+                    const tileY = row * tile_size;
+                    if (checkCollision(this, { x: tileX, y: tileY, width: tile_size, height: tile_size })) {
+                        if (this.velocityY > 0) {
+                            this.y = tileY - this.height;
+                            this.isJumping = false;
+                        }
+                        if (this.velocityY < 0) this.y = tileY + tile_size;
+                        this.velocityY = 0;
+                    }
+                }
+            }
+        }
+    }
+
+    // Draw the player
+    draw(ctx, assets, camera) {
+        const playerAsset = this.isJumping ? assets.player_jump : assets.player_idle;
+        if (playerAsset && playerAsset.complete && playerAsset.naturalHeight !== 0) {
+            const playerX = this.x - camera.x;
+            const playerY = this.y - camera.y;
+            if (this.direction === 1) {
+                ctx.drawImage(playerAsset, playerX, playerY, this.width, this.height);
+            } else {
+                ctx.save();
+                ctx.translate(playerX + this.width, playerY);
+                ctx.scale(-1, 1);
+                ctx.drawImage(playerAsset, 0, 0, this.width, this.height);
+                ctx.restore();
+            }
+        } else {
+            ctx.fillStyle = this.color;
+            ctx.fillRect(this.x - camera.x, this.y - camera.y, this.width, this.height);
+        }
+    }
+}
+
+
+// -- BULLET CLASS --
+class Bullet {
+    constructor(x, y, direction) {
+        this.x = x;
+        this.y = y;
+        this.width = 10;
+        this.height = 10;
+        this.velocityX = direction * BULLET_SPEED;
+        this.color = '#fff';
+    }
+
+    update() {
+        this.x += this.velocityX;
+    }
+
+    draw() {
+        ctx.fillStyle = this.color;
+        ctx.beginPath();
+        ctx.arc(this.x - camera.x + this.width / 2, this.y - camera.y + this.height / 2, this.width / 2, 0, Math.PI * 2);
+        ctx.fill();
+    }
+}
 
 let score = 0;
+let bullets = 0;
 let currentLevelIndex = 0;
-let gameState = 'HOME'; // 'HOME', 'PLAYING', 'PAUSED', 'GAME_OVER'
+let activeBullets = [];
+const player = new Player(80, 80, TILE_SIZE - 10, TILE_SIZE - 5, '#ff5733');
+const camera = { x: 0, y: 0 };
+
 
 // ASSET MANAGEMENT
 const assets = {};
@@ -19,16 +140,23 @@ const assetPaths = {
     wall: 'assets/wall.png',
     coin: 'assets/coin.png',
     goal: 'assets/goal.png',
+    gun: 'assets/gun.png',
     phantom_wall: 'assets/phantom_wall.png',
     spikes: 'assets/spikes.png',
     enemy: 'assets/enemy.png',
     player_idle: 'assets/player_idle.png',
-    player_jump: 'assets/player_jump.png'
+    player_jump: 'assets/player_jump.png',
+    gun_sound: 'assets/gun_sound.mp3'
 };
 
-function loadAssets(onComplete) {
+function loadAssets(onComplete, onError) {
     let assetsLoaded = 0;
     const totalAssets = Object.keys(assetPaths).length;
+
+    if (totalAssets === 0) {
+        onComplete();
+        return;
+    }
 
     const onAssetLoad = () => {
         assetsLoaded++;
@@ -37,20 +165,27 @@ function loadAssets(onComplete) {
         }
     };
 
+    const onAssetError = (assetName) => {
+        console.error(`Failed to load asset: ${assetPaths[assetName]}`);
+        onError(`Failed to load asset: ${assetPaths[assetName]}`);
+    };
+
     for (const name in assetPaths) {
-        assets[name] = new Image();
-        assets[name].src = assetPaths[name];
-        assets[name].onload = onAssetLoad;
-        assets[name].onerror = () => {
-            console.error(`Failed to load asset: ${assetPaths[name]}`);
-            onAssetLoad();
-        };
+        if (assetPaths[name].endsWith('.mp3')) {
+            assets[name] = new Audio(assetPaths[name]);
+            assets[name].oncanplaythrough = onAssetLoad;
+            assets[name].onerror = () => onAssetError(name);
+        } else {
+            assets[name] = new Image();
+            assets[name].src = assetPaths[name];
+            assets[name].onload = onAssetLoad;
+            assets[name].onerror = () => onAssetError(name);
+        }
     }
 }
 
-
 // -- LEVEL STRUCTURES --
-// 0=Empty | 1=Platform | 2=Goal | 3=Coin | 5=Enemy | 6=Spikes | 7=Phantom Wall
+// 0=Empty | 1=Platform | 2=Goal | 3=Coin | 4=Gun | 5=Enemy | 6=Spikes | 7=Phantom Wall
 const originalLevels = [
     // Level 1
     {
@@ -144,41 +279,140 @@ const originalLevels = [
             [1, 1, 1, 1, 1, 1, 1, 1, 6, 6, 6, 6, 6, 6, 6, 1, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 1],
             [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
         ]
+    },
+    // Level 6 - New: Gun Block
+    {
+        map: [
+            [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 0, 1],
+            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1],
+            [1, 0, 0, 5, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 1],
+            [1, 0, 0, 1, 1, 1, 0, 0, 0, 0, 3, 0, 0, 0, 1, 1, 1, 1, 1, 1],
+            [1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 1],
+            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0, 1],
+            [1, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0, 1, 1, 1, 0, 1],
+            [1, 1, 1, 1, 1, 0, 0, 0, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 3, 1],
+            [1, 0, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1],
+            [1, 0, 3, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 1],
+            [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+        ]
+    },
+    // Level 7 - New: Spikes and Enemy
+    {
+        map: [
+            [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+            [1, 0, 0, 1, 1, 0, 0, 1, 1, 0, 0, 1, 1, 0, 0, 3, 0, 0, 1, 1, 5, 1, 1, 0, 1, 1, 0, 0, 0, 0, 3, 0, 0, 1, 1, 0, 0, 0, 0, 1],
+            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 2, 1],
+            [1, 0, 3, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1],
+            [1, 1, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1, 1, 1, 1, 7, 3, 3, 1],
+            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 7, 3, 3, 1],
+            [1, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 0, 0, 0, 3, 0, 1, 1, 0, 0, 0, 0, 1, 1, 0, 0, 3, 0, 1, 1, 1, 1, 1, 0, 0, 3, 0, 1, 1, 1],
+            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 1, 1, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 1],
+            [1, 0, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+            [1, 0, 0, 0, 5, 0, 0, 1, 1, 1, 0, 0, 3, 0, 0, 1, 1, 1, 1, 1, 0, 0, 3, 0, 0, 1, 1, 1, 1, 1, 0, 0, 3, 0, 0, 1, 1, 1, 0, 1],
+            [1, 1, 1, 1, 1, 1, 1, 1, 6, 6, 6, 6, 6, 6, 6, 1, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 1],
+            [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+        ]
+    },
+    // Level 8 - New: Phantom Walls, Enemy, and Gun
+    {
+        map: [
+            [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+            [1, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 1],
+            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+            [1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1],
+            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+            [1, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 1],
+            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+            [1, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 1],
+            [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+        ]
+    },
+    // Level 9 - New: Spikes and Enemy
+    {
+        map: [
+            [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 0, 1],
+            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1],
+            [1, 0, 0, 5, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 1],
+            [1, 0, 0, 1, 1, 1, 0, 0, 0, 0, 3, 0, 0, 0, 1, 1, 1, 1, 1, 1],
+            [1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 1],
+            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0, 1],
+            [1, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0, 1, 1, 1, 0, 1],
+            [1, 1, 1, 1, 1, 0, 0, 0, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 3, 1],
+            [1, 0, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1],
+            [1, 0, 3, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 1],
+            [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+        ]
+    },
+    // Level 10 - New: Finale with Boss
+    {
+        map: [
+            [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 1],
+            [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+        ]
     }
 ];
+
 let currentLevelMap;
 let currentLevelWidth;
 let dynamicObjects = [];
-
-// -- PLAYER & CAMERA OBJECTS --
-const player = {
-    x: 80, y: 80,
-    width: TILE_SIZE - 10, height: TILE_SIZE - 5,
-    velocityX: 0, velocityY: 0,
-    isJumping: false,
-    direction: 1, // 1 for right, -1 for left
-    color: '#ff5733'
-};
-const camera = { x: 0, y: 0 };
 
 // -- PAUSE MENU --
 const resumeBtn = { x: canvas.width / 2 - 100, y: canvas.height / 2 - 25, width: 200, height: 50 };
 const exitBtn = { x: canvas.width / 2 - 100, y: canvas.height / 2 + 45, width: 200, height: 50 };
 
 // -- KEYBOARD & TOUCH INPUT --
-const keys = { ArrowLeft: false, ArrowRight: false, ArrowUp: false, Space: false, KeyW: false, KeyA: false, KeyD: false };
+const keys = { ArrowLeft: false, ArrowRight: false, ArrowUp: false, Space: false, KeyW: false, KeyA: false, KeyD: false, Control: false };
+const pressedKeys = {};
 
 window.addEventListener('keydown', (e) => {
-    if ((gameState === 'HOME' || gameState === 'GAME_OVER') && e.code === 'Enter') {
+    if (e.code === 'Enter' && (currentGameState === gameStates.HOME || currentGameState === gameStates.GAME_OVER)) {
         startGame();
-    } else if (gameState === 'PLAYING' && e.code in keys) {
-        keys[e.code] = true;
     } else if (e.code === 'Escape') {
-        if (gameState === 'PLAYING') gameState = 'PAUSED';
-        else if (gameState === 'PAUSED') gameState = 'PLAYING';
+        if (currentGameState === gameStates.PLAYING) {
+            currentGameState = gameStates.PAUSED;
+        } else if (currentGameState === gameStates.PAUSED) {
+            currentGameState = gameStates.PLAYING;
+        }
+    } else if (currentGameState === gameStates.PLAYING) {
+        if (e.code in keys) {
+            keys[e.code] = true;
+        }
+        if (e.code === 'ControlLeft' || e.code === 'ControlRight') {
+            if (!pressedKeys.Control) {
+                shootBullet();
+                pressedKeys.Control = true;
+            }
+        }
     }
 });
-window.addEventListener('keyup', (e) => { if (e.code in keys) keys[e.code] = false; });
+window.addEventListener('keyup', (e) => {
+    if (e.code in keys) keys[e.code] = false;
+    if (e.code === 'ControlLeft' || e.code === 'ControlRight') pressedKeys.Control = false;
+});
 
 function setupTouchControls() {
     const btnLeft = document.getElementById('btn-left');
@@ -190,16 +424,24 @@ function setupTouchControls() {
     btnRight.addEventListener('touchend', (e) => { e.preventDefault(); keys.ArrowRight = false; });
     btnJump.addEventListener('touchstart', (e) => { e.preventDefault(); keys.ArrowUp = true; });
     btnJump.addEventListener('touchend', (e) => { e.preventDefault(); keys.ArrowUp = false; });
-    canvas.addEventListener('touchstart', (e) => { if (gameState === 'HOME' || gameState === 'GAME_OVER') startGame(); });
+    canvas.addEventListener('touchstart', (e) => {
+        if (currentGameState === gameStates.HOME || currentGameState === gameStates.GAME_OVER) {
+            startGame();
+        } else if (currentGameState === gameStates.PLAYING && e.target === canvas) {
+             shootBullet();
+        }
+    });
 }
 
 function setupPauseControls() {
     pauseBtn.addEventListener('click', () => {
-        if (gameState === 'PLAYING') gameState = 'PAUSED';
+        if (currentGameState === gameStates.PLAYING) {
+            currentGameState = gameStates.PAUSED;
+        }
     });
 
     canvas.addEventListener('click', (e) => {
-        if (gameState !== 'PAUSED') return;
+        if (currentGameState !== gameStates.PAUSED) return;
 
         const rect = canvas.getBoundingClientRect();
         const mouseX = e.clientX - rect.left;
@@ -208,15 +450,30 @@ function setupPauseControls() {
         // Check if Resume button is clicked
         if (mouseX >= resumeBtn.x && mouseX <= resumeBtn.x + resumeBtn.width &&
             mouseY >= resumeBtn.y && mouseY <= resumeBtn.y + resumeBtn.height) {
-            gameState = 'PLAYING';
+            currentGameState = gameStates.PLAYING;
         }
 
         // Check if Exit button is clicked
         if (mouseX >= exitBtn.x && mouseX <= exitBtn.x + exitBtn.width &&
             mouseY >= exitBtn.y && mouseY <= exitBtn.y + exitBtn.height) {
-            gameState = 'HOME';
+            currentGameState = gameStates.HOME;
         }
     });
+}
+
+function shootBullet() {
+    if (bullets > 0) {
+        bullets--;
+        const bulletDirection = player.direction;
+        const bulletX = player.x + (player.width / 2);
+        const bulletY = player.y + (player.height / 2);
+        activeBullets.push(new Bullet(bulletX, bulletY, bulletDirection));
+
+        if (assets.gun_sound) {
+            assets.gun_sound.currentTime = 0;
+            assets.gun_sound.play();
+        }
+    }
 }
 
 
@@ -226,6 +483,7 @@ function loadLevel(levelIndex) {
     currentLevelMap = JSON.parse(JSON.stringify(levelData.map));
     currentLevelWidth = currentLevelMap[0].length * TILE_SIZE;
     dynamicObjects = [];
+    activeBullets = [];
     for (let row = 0; row < currentLevelMap.length; row++) {
         for (let col = 0; col < currentLevelMap[row].length; col++) {
             if (currentLevelMap[row][col] === 5) {
@@ -236,9 +494,28 @@ function loadLevel(levelIndex) {
     }
     resetPlayer();
 }
-function resetPlayer() { player.x = 80; player.y = 80; player.velocityX = 0; player.velocityY = 0; player.direction = 1; }
-function startGame() { score = 0; currentLevelIndex = 0; loadLevel(currentLevelIndex); gameState = 'PLAYING'; }
-function nextLevel() { currentLevelIndex++; if (currentLevelIndex >= originalLevels.length) gameState = 'GAME_OVER'; else loadLevel(currentLevelIndex); }
+function resetPlayer() {
+    player.x = 80;
+    player.y = 80;
+    player.velocityX = 0;
+    player.velocityY = 0;
+    player.direction = 1;
+}
+function startGame() {
+    score = 0;
+    bullets = 0;
+    currentLevelIndex = 0;
+    loadLevel(currentLevelIndex);
+    currentGameState = gameStates.PLAYING;
+}
+function nextLevel() {
+    currentLevelIndex++;
+    if (currentLevelIndex >= originalLevels.length) {
+        currentGameState = gameStates.GAME_OVER;
+    } else {
+        loadLevel(currentLevelIndex);
+    }
+}
 
 // -- DRAWING FUNCTIONS --
 function drawGame() {
@@ -275,6 +552,13 @@ function drawGame() {
                     ctx.beginPath();
                     ctx.arc(tileX + TILE_SIZE / 2, tileY + TILE_SIZE / 2, (TILE_SIZE / 3) * 0.8, 0, Math.PI * 2);
                     ctx.fill();
+                }
+            } else if (tile === 4) {
+                if (assets.gun && assets.gun.complete && assets.gun.naturalHeight !== 0) {
+                    ctx.drawImage(assets.gun, tileX, tileY, TILE_SIZE, TILE_SIZE);
+                } else {
+                    ctx.fillStyle = '#8e44ad';
+                    ctx.fillRect(tileX + 10, tileY + 10, TILE_SIZE - 20, TILE_SIZE - 20);
                 }
             } else if (tile === 6) {
                 if (assets.spikes && assets.spikes.complete && assets.spikes.naturalHeight !== 0) {
@@ -322,66 +606,51 @@ function drawGame() {
         }
     });
 
-    const playerAsset = player.isJumping ? assets.player_jump : assets.player_idle;
-    if (playerAsset && playerAsset.complete && playerAsset.naturalHeight !== 0) {
-        const playerX = player.x - camera.x;
-        const playerY = player.y - camera.y;
-        if (player.direction === 1) {
-            ctx.drawImage(playerAsset, playerX, playerY, player.width, player.height);
-        } else {
-            ctx.save();
-            ctx.translate(playerX + player.width, playerY);
-            ctx.scale(-1, 1);
-            ctx.drawImage(playerAsset, 0, 0, player.width, player.height);
-            ctx.restore();
-        }
-    } else {
-        ctx.fillStyle = player.color;
-        ctx.fillRect(player.x - camera.x, player.y - camera.y, player.width, player.height);
-    }
+    activeBullets.forEach(bullet => bullet.draw());
+
+    player.draw(ctx, assets, camera);
 
     ctx.fillStyle = '#fff';
     ctx.font = '24px Arial';
     ctx.textAlign = 'left';
     ctx.fillText(`Score: ${score}`, 10, 30);
     ctx.fillText(`Level: ${currentLevelIndex + 1}`, canvas.width - 120, 30);
+    drawBulletCount();
+}
+
+function drawBulletCount() {
+    ctx.fillStyle = '#fff';
+    ctx.font = '24px Arial';
+    ctx.textAlign = 'center';
+    ctx.fillText(`Bullets: ${bullets}`, canvas.width / 2, 30);
 }
 
 function drawHomeScreen() {
-    // Reset canvas state for this specific screen to ensure visibility
-    ctx.globalAlpha = 1.0; // Ensure full opacity
-    ctx.fillStyle = '#000'; // Set background color to black
-
-    // Draw background
+    ctx.globalAlpha = 1.0;
+    ctx.fillStyle = '#000';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-    // Draw title text
-    ctx.fillStyle = '#fff'; // Set text color to white
+    ctx.fillStyle = '#fff';
     ctx.font = '50px Arial';
     ctx.textAlign = 'center';
     ctx.fillText('The 2D Platformer', canvas.width / 2, canvas.height / 2 - 40);
 
-    // Draw instruction text
     ctx.font = '24px Arial';
     ctx.fillText('Press Enter or Tap Screen to Start', canvas.width / 2, canvas.height / 2 + 20);
 }
 
 function drawGameOverScreen() {
-    // Draw the semi-transparent background overlay
     ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
-    
-    // Draw the "You Win!" text
+
     ctx.fillStyle = '#fff';
     ctx.font = '50px Arial';
     ctx.textAlign = 'center';
     ctx.fillText('You Win!', canvas.width / 2, canvas.height / 2 - 40);
-    
-    // Draw the final score
+
     ctx.font = '30px Arial';
     ctx.fillText(`Final Score: ${score}`, canvas.width / 2, canvas.height / 2 + 20);
-    
-    // Draw the instruction to play again
+
     ctx.font = '20px Arial';
     ctx.fillText('Press Enter or Tap Screen to Play Again', canvas.width / 2, canvas.height / 2 + 70);
 }
@@ -435,6 +704,10 @@ function handleTileCollisions() {
                         score += 100;
                         currentLevelMap[row][col] = 0;
                         break;
+                    case 4:
+                        bullets += 3;
+                        currentLevelMap[row][col] = 0;
+                        break;
                     case 6:
                         resetPlayer();
                         return;
@@ -444,102 +717,77 @@ function handleTileCollisions() {
     }
 }
 
-function update() {
-    player.velocityX = 0;
-    if (keys.ArrowLeft || keys.KeyA) {
-        player.velocityX = -PLAYER_SPEED;
-        player.direction = -1;
-    }
-    if (keys.ArrowRight || keys.KeyD) {
-        player.velocityX = PLAYER_SPEED;
-        player.direction = 1;
-    }
-    // Check for jump input from W, ArrowUp, or Space
-    if ((keys.ArrowUp || keys.Space || keys.KeyW) && !player.isJumping) {
-        player.velocityY = -JUMP_POWER;
-        player.isJumping = true;
-    }
-
-    player.velocityY += GRAVITY;
-
-    player.x += player.velocityX;
-    for (let row = 0; row < currentLevelMap.length; row++) {
-        for (let col = 0; col < currentLevelMap[row].length; col++) {
-            const tile = currentLevelMap[row][col];
-            if (tile === 1) {
-                const tileX = col * TILE_SIZE;
-                const tileY = row * TILE_SIZE;
-                if (checkCollision(player, { x: tileX, y: tileY, width: TILE_SIZE, height: TILE_SIZE })) {
-                    if (player.velocityX > 0) player.x = tileX - player.width;
-                    if (player.velocityX < 0) player.x = tileX + TILE_SIZE;
+// New: State machine object
+const gameStates = {
+    HOME: {
+        update: () => { /* No update needed for home screen */ },
+        draw: drawHomeScreen
+    },
+    PLAYING: {
+        update: () => {
+            player.update(currentLevelMap, TILE_SIZE);
+            handleTileCollisions();
+            
+            dynamicObjects.forEach(obj => {
+                if (checkCollision(player, obj)) {
+                    resetPlayer();
+                    return;
                 }
-            }
-        }
-    }
+            });
 
-    player.y += player.velocityY;
-    for (let row = 0; row < currentLevelMap.length; row++) {
-        for (let col = 0; col < currentLevelMap[row].length; col++) {
-            const tile = currentLevelMap[row][col];
-            if (tile === 1) {
-                const tileX = col * TILE_SIZE;
-                const tileY = row * TILE_SIZE;
-                if (checkCollision(player, { x: tileX, y: tileY, width: TILE_SIZE, height: TILE_SIZE })) {
-                    if (player.velocityY > 0) {
-                        player.y = tileY - player.height;
-                        player.isJumping = false;
-                    }
-                    if (player.velocityY < 0) player.y = tileY + TILE_SIZE;
-                    player.velocityY = 0;
+            activeBullets.forEach(bullet => bullet.update());
+            activeBullets = activeBullets.filter(bullet => {
+                const hitEnemyIndex = dynamicObjects.findIndex(enemy => checkCollision(bullet, enemy));
+                if (hitEnemyIndex !== -1) {
+                    score += 250;
+                    dynamicObjects.splice(hitEnemyIndex, 1);
+                    return false;
                 }
-            }
+                return bullet.x > -TILE_SIZE && bullet.x < currentLevelWidth;
+            });
+
+            updateDynamicObjects();
+            updateCamera();
+        },
+        draw: () => {
+            drawGame();
+            pauseBtn.classList.remove('hidden');
+        }
+    },
+    PAUSED: {
+        update: () => { /* No update needed for pause menu */ },
+        draw: () => {
+            drawGame();
+            drawPauseMenu();
+            pauseBtn.classList.remove('hidden');
+        }
+    },
+    GAME_OVER: {
+        update: () => { /* No update needed for game over screen */ },
+        draw: () => {
+            drawGameOverScreen();
+            pauseBtn.classList.add('hidden');
         }
     }
+};
 
-    handleTileCollisions();
-
-    dynamicObjects.forEach(obj => {
-        if (checkCollision(player, obj)) {
-            resetPlayer();
-            return;
-        }
-    });
-
-    updateDynamicObjects();
-    updateCamera();
-}
+let currentGameState = gameStates.HOME;
 
 // -- MAIN GAME LOOP --
 function gameLoop() {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-    if (gameState === 'PLAYING') {
-        pauseBtn.style.display = 'block';
-    } else {
-        pauseBtn.style.display = 'none';
-    }
+    currentGameState.update();
+    currentGameState.draw();
 
-    switch (gameState) {
-        case 'HOME':
-            drawHomeScreen();
-            break;
-        case 'PLAYING':
-            update();
-            drawGame();
-            break;
-        case 'PAUSED':
-            drawGame();
-            drawPauseMenu();
-            break;
-        case 'GAME_OVER':
-            drawGameOverScreen();
-            break;
-    }
     requestAnimationFrame(gameLoop);
 }
 
-
 // --- INITIALIZE ---
+pauseBtn.classList.add('hidden');
 setupTouchControls();
 setupPauseControls();
-loadAssets(gameLoop);
+loadAssets(gameLoop, (errorMsg) => {
+    console.error("Game failed to initialize due to asset loading error.");
+    alert(errorMsg);
+});

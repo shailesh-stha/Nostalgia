@@ -34,12 +34,17 @@ canvas {
     border-radius: 8px;
     cursor: pointer;
     z-index: 10; /* Make sure it's on top of the canvas */
+    transition: opacity 0.3s; /* Smooth transition for visual feedback */
+}
+
+.hidden {
+    opacity: 0;
+    pointer-events: none; /* Make it unclickable when hidden */
 }
 
 .ingame-only {
-    display: none; /* Hidden by default */
+    display: none;
 }
-
 
 /* --- MOBILE TOUCH CONTROLS --- */
 .mobile-only {

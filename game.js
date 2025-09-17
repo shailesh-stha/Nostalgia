@@ -359,7 +359,7 @@ function drawHomeScreen() {
     ctx.fillStyle = '#fff'; // Set text color to white
     ctx.font = '50px Arial';
     ctx.textAlign = 'center';
-    ctx.fillText('Dangerous Dave Clone', canvas.width / 2, canvas.height / 2 - 40);
+    ctx.fillText('The 2D Platformer', canvas.width / 2, canvas.height / 2 - 40);
 
     // Draw instruction text
     ctx.font = '24px Arial';

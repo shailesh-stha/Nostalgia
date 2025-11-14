@@ -8,17 +8,25 @@ body {
     align-items: center;
     height: 100vh;
     margin: 0;
-    overflow: hidden; /* Prevents scrollbars on mobile */
+    overflow: hidden; /* Prevents scrollbars */
 }
 
 #game-container {
     position: relative;
     border: 2px solid #fff;
+    width: 55vw; /* 80% of the viewport width */
+    aspect-ratio: 16 / 10; /* Maintain a 16:10 aspect ratio */
+    
+    /* Add max-size constraints to prevent it from becoming too large on big screens or too tall on narrow screens */
+    max-height: 95vh;
+    max-width: calc(95vh * 1.6);
 }
 
 canvas {
     background-color: #000;
     display: block; /* Removes extra space below the canvas */
+    width: 100%; /* Fill the container's width */
+    height: 100%; /* Fill the container's height */
 }
 
 #pause-btn {

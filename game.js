@@ -1,16 +1,58 @@
 // Get the canvas and its 2D rendering context
 const canvas = document.getElementById('gameCanvas');
+// SET INTERNAL RESOLUTION: This keeps the game's coordinate system consistent
+// CSS will handle scaling this to fit the responsive container.
+canvas.width = 800;
+canvas.height = 550; // UPDATED: Changed from 500 to 550 (11 rows * 50px)
 const ctx = canvas.getContext('2d');
 const pauseBtn = document.getElementById('pause-btn');
 
 // -- GAME CONSTANTS & VARIABLES --
-const TILE_SIZE = 40;
+const TILE_SIZE = 50; 
 const GRAVITY = 0.3;
 const PLAYER_SPEED = 4;
 const JUMP_POWER = 8;
 const BULLET_SPEED = 8;
-const FRICTION = 0.75; // New: For player deceleration
-const MAX_JUMP_TIME = 15; // New: For variable jump height
+const FRICTION = 0;
+const MAX_JUMP_TIME = 1;
+const COYOTE_TIME = 5;
+
+// Gameplay constants
+const PLAYER_MAX_HEALTH = 3;
+
+// -- PARTICLE CLASS --
+class Particle {
+    constructor(x, y, color, size, life, velX = (Math.random() - 0.5) * 4, velY = (Math.random() - 0.5) * 4 - 2, hasGravity = true) {
+        this.x = x;
+        this.y = y;
+        this.color = color;
+        this.size = Math.random() * size + 2;
+        this.life = life;
+        this.maxLife = life; // NEW: Store the initial life for fading calculation
+        this.velocityX = velX;
+        this.velocityY = velY;
+        this.hasGravity = hasGravity;
+    }
+
+    update() {
+        this.x += this.velocityX;
+        this.y += this.velocityY;
+        if (this.hasGravity) {
+            this.velocityY += GRAVITY / 2;
+        }
+        this.life--;
+    }
+
+    draw(ctx, camera) {
+        ctx.save();
+        ctx.globalAlpha = this.life / this.maxLife;
+        ctx.fillStyle = this.color;
+        // UPDATED: Draw the rectangle centered on the particle's x/y coordinates
+        ctx.fillRect(this.x - camera.x - this.size / 2, this.y - camera.y - this.size / 2, this.size, this.size);
+        ctx.restore();
+    }
+}
+
 
 // -- PLAYER CLASS --
 class Player {
@@ -22,14 +64,21 @@ class Player {
         this.velocityX = 0;
         this.velocityY = 0;
         this.isJumping = false;
-        this.isOnGround = false; // New: To correctly handle jumping
-        this.direction = 1; // 1 for right, -1 for left
+        this.isFalling = false;
+        this.isOnGround = false;
+        this.direction = 1;
         this.color = color;
-        this.jumpTimer = 0; // New: For variable jump height
+        this.jumpTimer = 0;
+        this.coyoteTimeCounter = 0;
+        
+        this.walkSoundTimer = 0;
+
+        this.maxHealth = PLAYER_MAX_HEALTH;
+        this.health = this.maxHealth;
     }
 
     // Handle player's movement and physics
-    update(map, tile_size) {
+    update(map, tile_size, dynamicObjects) { 
         // Player horizontal movement and deceleration
         if (keys.ArrowLeft || keys.KeyA) {
             this.velocityX = -PLAYER_SPEED;
@@ -38,25 +87,45 @@ class Player {
             this.velocityX = PLAYER_SPEED;
             this.direction = 1;
         } else {
-            this.velocityX *= FRICTION; // Apply friction when no key is pressed
+            this.velocityX *= FRICTION;
+        }
+
+        // Walking sound logic
+        const isTryingToMove = (keys.ArrowLeft || keys.KeyA || keys.ArrowRight || keys.KeyD);
+        if (isTryingToMove && this.isOnGround) {
+            this.walkSoundTimer--;
+            if (this.walkSoundTimer <= 0) {
+                playWalkSound();
+                this.walkSoundTimer = 20; 
+            }
         }
 
         // Variable jump height logic
         if ((keys.ArrowUp || keys.Space || keys.KeyW)) {
-            if (this.isOnGround) {
+            if (this.coyoteTimeCounter > 0) {
+                if (assets.sound_jump) {
+                    assets.sound_jump.currentTime = 0;
+                    assets.sound_jump.play();
+                }
                 this.velocityY = -JUMP_POWER;
                 this.isJumping = true;
+                this.isFalling = false;
                 this.isOnGround = false;
                 this.jumpTimer = 0;
+                this.coyoteTimeCounter = 0;
             } else if (this.isJumping && this.jumpTimer < MAX_JUMP_TIME) {
-                this.velocityY -= 0.5; // Small upward boost for variable height
+                this.velocityY -= 0.5;
                 this.jumpTimer++;
             }
         } else {
-            this.isJumping = false; // Stop boosting if key is released
+            this.isJumping = false;
         }
 
         this.velocityY += GRAVITY;
+
+        if (this.velocityY > 0) {
+            this.isFalling = true;
+        }
 
         // X-axis movement and collision
         this.x += this.velocityX;
@@ -69,7 +138,7 @@ class Player {
                     if (checkCollision(this, { x: tileX, y: tileY, width: tile_size, height: tile_size })) {
                         if (this.velocityX > 0) this.x = tileX - this.width;
                         if (this.velocityX < 0) this.x = tileX + tile_size;
-                        this.velocityX = 0; // Stop horizontal movement on collision
+                        this.velocityX = 0;
                     }
                 }
             }
@@ -77,7 +146,10 @@ class Player {
 
         // Y-axis movement and collision
         this.y += this.velocityY;
-        this.isOnGround = false; // Assume not on ground unless collision proves otherwise
+        this.isOnGround = false;
+        let onMovingPlatform = null; 
+
+        // Check against solid tiles
         for (let row = 0; row < map.length; row++) {
             for (let col = 0; col < map[row].length; col++) {
                 const tile = map[row][col];
@@ -88,7 +160,8 @@ class Player {
                         if (this.velocityY > 0) {
                             this.y = tileY - this.height;
                             this.velocityY = 0;
-                            this.isOnGround = true; // Player is on the ground
+                            this.isOnGround = true;
+                            this.isFalling = false;
                         }
                         if (this.velocityY < 0) {
                             this.y = tileY + tile_size;
@@ -98,11 +171,51 @@ class Player {
                 }
             }
         }
+
+        // Check against moving platforms
+        dynamicObjects.forEach(obj => {
+            if (obj.type === 'moving_platform') {
+                if (checkCollision(this, obj)) {
+                    if (this.velocityY > 0 && (this.y + this.height - this.velocityY) <= obj.y) {
+                        this.y = obj.y - this.height;
+                        this.velocityY = 0;
+                        this.isOnGround = true;
+                        this.isFalling = false;
+                        onMovingPlatform = obj;
+                    }
+                    else if (this.velocityY < 0 && this.y - this.velocityY >= obj.y + obj.height) {
+                         this.y = obj.y + obj.height;
+                         this.velocityY = 0;
+                    }
+                    else {
+                        if(this.velocityX > 0) this.x = obj.x - this.width;
+                        if(this.velocityX < 0) this.x = obj.x + obj.width;
+                    }
+                }
+            }
+        });
+        
+        // Stick to the moving platform
+        if (onMovingPlatform) {
+            this.x += onMovingPlatform.velocityX;
+        }
+
+        // Coyote Time Logic
+        if (this.isOnGround) {
+            this.coyoteTimeCounter = COYOTE_TIME;
+        } else {
+            this.coyoteTimeCounter--;
+        }
     }
 
     // Draw the player
     draw(ctx, assets, camera) {
-        const playerAsset = this.isJumping ? assets.player_jump : assets.player_idle;
+        let playerAsset = assets.player_idle;
+
+        if (!this.isOnGround) {
+            playerAsset = this.isFalling ? assets.player_land : assets.player_jump;
+        }
+
         if (playerAsset && playerAsset.complete && playerAsset.naturalHeight !== 0) {
             const playerX = this.x - camera.x;
             const playerY = this.y - camera.y;
@@ -120,6 +233,25 @@ class Player {
             ctx.fillRect(this.x - camera.x, this.y - camera.y, this.width, this.height);
         }
     }
+    
+    // Method to handle taking damage
+    takeDamage(amount) {
+        if (assets.sound_damage) {
+            assets.sound_damage.currentTime = 0;
+            assets.sound_damage.play();
+        }
+
+        this.health -= amount;
+        triggerScreenShake(15, 4);
+
+        if (this.health <= 0) {
+            gameOverMessage = 'Game Over';
+            currentGameState = gameStates.GAME_OVER;
+        } else {
+            // Respawn at the start of the level
+            resetPlayerPosition();
+        }
+    }
 }
 
 
@@ -135,10 +267,21 @@ class Bullet {
     }
 
     update() {
+        // Spawn a trail particle without gravity
+        particles.push(new Particle(
+            this.x + this.width / 2, 
+            this.y + this.height / 2, 
+            this.color, 
+            this.width / 1.5, 
+            10, // life
+            (Math.random() - 0.5) * 0.5, // low velocity x
+            (Math.random() - 0.5) * 0.5,  // low velocity y
+            false // hasGravity = false
+        ));
         this.x += this.velocityX;
     }
 
-    draw() {
+    draw(ctx, camera) {
         ctx.fillStyle = this.color;
         ctx.beginPath();
         ctx.arc(this.x - camera.x + this.width / 2, this.y - camera.y + this.height / 2, this.width / 2, 0, Math.PI * 2);
@@ -146,12 +289,25 @@ class Bullet {
     }
 }
 
+// Enemy Bullet Class
+class EnemyBullet extends Bullet {
+    constructor(x, y, direction) {
+        super(x, y, direction);
+        this.color = '#ff6b6b';
+    }
+}
+
+
 let score = 0;
 let bullets = 0;
 let currentLevelIndex = 0;
 let activeBullets = [];
+let enemyBullets = []; 
+let particles = []; 
 const player = new Player(80, 80, TILE_SIZE - 10, TILE_SIZE - 5, '#ff5733');
-const camera = { x: 0, y: 0 };
+const camera = { x: 0, y: 0, shakeDuration: 0, shakeMagnitude: 0 }; 
+let gameOverMessage = '';
+let currentSpawnPoint = { row: 1, col: 1 }; // Default spawn point
 
 
 // ASSET MANAGEMENT
@@ -166,7 +322,15 @@ const assetPaths = {
     enemy: 'assets/enemy.png',
     player_idle: 'assets/player_idle.png',
     player_jump: 'assets/player_jump.png',
-    gun_sound: 'assets/gun_sound.mp3'
+    player_land: 'assets/player_land.png',
+    gun_sound: 'assets/gun_sound.mp3',
+    heart: 'assets/heart.png',
+    enemy_shooter: 'assets/enemy_shooter.png',
+    platform_move: 'assets/platform_move.png',
+    sound_jump: 'assets/sound_jump.mp3',
+    sound_walk_dirt1: 'assets/sound_walk_dirt1.mp3',
+    sound_collect_coin: 'assets/sound_collect_coin.mp3',
+    sound_damage: 'assets/sound_damage.mp3'
 };
 
 function loadAssets(onComplete, onError) {
@@ -205,196 +369,7 @@ function loadAssets(onComplete, onError) {
 }
 
 // -- LEVEL STRUCTURES --
-// 0=Empty | 1=Platform | 2=Goal | 3=Coin | 4=Gun | 5=Enemy | 6=Spikes | 7=Phantom Wall
-const originalLevels = [
-    // Level 1
-    {
-        map: [
-            [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
-            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 1],
-            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 0, 1],
-            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1],
-            [1, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 1],
-            [1, 0, 0, 3, 0, 3, 0, 0, 0, 0, 3, 0, 0, 0, 1, 1, 1, 1, 1, 1],
-            [1, 0, 0, 1, 1, 1, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 1],
-            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0, 1],
-            [1, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0, 1, 1, 1, 0, 1],
-            [1, 1, 1, 1, 1, 0, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
-            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 3, 1],
-            [1, 0, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1],
-            [1, 0, 3, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 1],
-            [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
-        ]
-    },
-    // Level 2
-    {
-        map: [
-            [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
-            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 1],
-            [1, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 3, 0, 1],
-            [1, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1],
-            [1, 0, 3, 0, 0, 0, 3, 0, 0, 3, 0, 1, 1, 1, 1, 0, 3, 0, 0, 1],
-            [1, 1, 1, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 1, 1, 1, 1],
-            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
-            [1, 0, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1, 1, 0, 0, 1, 1, 1, 0, 1],
-            [1, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0, 1],
-            [1, 1, 1, 1, 1, 1, 0, 1, 1, 1, 0, 0, 1, 1, 0, 0, 1, 1, 0, 1],
-            [1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1],
-            [1, 0, 3, 0, 0, 1, 1, 1, 0, 3, 0, 0, 1, 3, 0, 1, 1, 1, 0, 1],
-            [1, 0, 0, 0, 0, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
-            [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
-        ]
-    },
-    // Level 3
-    {
-        map: [
-            [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
-            [1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
-            [1, 0, 0, 0, 0, 0, 0, 3, 0, 1, 0, 3, 0, 0, 0, 0, 0, 0, 0, 1],
-            [1, 0, 0, 1, 1, 0, 1, 1, 1, 1, 1, 1, 1, 0, 1, 1, 0, 0, 0, 1],
-            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
-            [1, 1, 1, 0, 1, 1, 1, 0, 0, 2, 0, 0, 1, 1, 1, 0, 1, 1, 1, 1],
-            [1, 0, 0, 0, 1, 0, 0, 0, 1, 1, 1, 0, 0, 0, 1, 0, 0, 0, 0, 1],
-            [1, 0, 3, 0, 1, 0, 3, 0, 0, 0, 0, 0, 3, 0, 1, 0, 3, 0, 0, 1],
-            [1, 0, 0, 0, 1, 0, 0, 1, 1, 1, 1, 1, 0, 0, 1, 0, 0, 0, 0, 1],
-            [1, 1, 1, 1, 1, 0, 0, 0, 5, 0, 0, 0, 0, 0, 1, 0, 1, 1, 1, 1],
-            [1, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 1],
-            [1, 0, 3, 0, 1, 1, 1, 0, 0, 0, 0, 0, 1, 1, 1, 0, 3, 0, 0, 1],
-            [1, 0, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
-            [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
-        ]
-    },
-    // Level 4
-    {
-        map: [
-            [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
-            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 1],
-            [1, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 3, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1],
-            [1, 0, 3, 0, 0, 0, 0, 0, 1, 1, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0, 0, 1],
-            [1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 3, 0, 1, 1, 1, 1, 0, 0, 1],
-            [1, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 1],
-            [1, 0, 0, 5, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1],
-            [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 1, 1, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 3, 0, 0, 0, 0, 1],
-            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 1],
-            [1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0, 5, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1],
-            [1, 0, 0, 0, 0, 0, 0, 0, 0, 6, 6, 6, 6, 6, 6, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 3, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 1],
-            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 1, 1],
-            [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
-        ]
-    },
-    // Level 5 - WITH HIDDEN AREA
-    {
-        map: [
-            [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
-            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
-            [1, 0, 0, 1, 1, 0, 0, 1, 1, 0, 0, 1, 1, 0, 0, 3, 0, 0, 1, 1, 5, 1, 1, 0, 1, 1, 0, 0, 0, 0, 3, 0, 0, 1, 1, 0, 0, 0, 0, 1],
-            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 2, 1],
-            [1, 0, 3, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1],
-            [1, 1, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1, 1, 1, 1, 7, 3, 3, 1],
-            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 7, 3, 3, 1],
-            [1, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 0, 0, 0, 3, 0, 1, 1, 0, 0, 0, 0, 1, 1, 0, 0, 3, 0, 1, 1, 1, 1, 1, 0, 0, 3, 0, 1, 1, 1],
-            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 1, 1, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 1],
-            [1, 0, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
-            [1, 0, 0, 0, 5, 0, 0, 1, 1, 1, 0, 0, 3, 0, 0, 1, 1, 1, 1, 1, 0, 0, 3, 0, 0, 1, 1, 1, 1, 1, 0, 0, 3, 0, 0, 1, 1, 1, 0, 1],
-            [1, 1, 1, 1, 1, 1, 1, 1, 6, 6, 6, 6, 6, 6, 6, 1, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 1],
-            [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
-        ]
-    },
-    // Level 6 - New: Gun Block
-    {
-        map: [
-            [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
-            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
-            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 0, 1],
-            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1],
-            [1, 0, 0, 5, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 1],
-            [1, 0, 0, 1, 1, 1, 0, 0, 0, 0, 3, 0, 0, 0, 1, 1, 1, 1, 1, 1],
-            [1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 1],
-            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0, 1],
-            [1, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0, 1, 1, 1, 0, 1],
-            [1, 1, 1, 1, 1, 0, 0, 0, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
-            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 3, 1],
-            [1, 0, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1],
-            [1, 0, 3, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 1],
-            [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
-        ]
-    },
-    // Level 7 - New: Spikes and Enemy
-    {
-        map: [
-            [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
-            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
-            [1, 0, 0, 1, 1, 0, 0, 1, 1, 0, 0, 1, 1, 0, 0, 3, 0, 0, 1, 1, 5, 1, 1, 0, 1, 1, 0, 0, 0, 0, 3, 0, 0, 1, 1, 0, 0, 0, 0, 1],
-            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 2, 1],
-            [1, 0, 3, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1],
-            [1, 1, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1, 1, 1, 1, 7, 3, 3, 1],
-            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 7, 3, 3, 1],
-            [1, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 0, 0, 0, 3, 0, 1, 1, 0, 0, 0, 0, 1, 1, 0, 0, 3, 0, 1, 1, 1, 1, 1, 0, 0, 3, 0, 1, 1, 1],
-            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 1, 1, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 1],
-            [1, 0, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
-            [1, 0, 0, 0, 5, 0, 0, 1, 1, 1, 0, 0, 3, 0, 0, 1, 1, 1, 1, 1, 0, 0, 3, 0, 0, 1, 1, 1, 1, 1, 0, 0, 3, 0, 0, 1, 1, 1, 0, 1],
-            [1, 1, 1, 1, 1, 1, 1, 1, 6, 6, 6, 6, 6, 6, 6, 1, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 1],
-            [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
-        ]
-    },
-    // Level 8 - New: Phantom Walls, Enemy, and Gun
-    {
-        map: [
-            [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
-            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
-            [1, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1],
-            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 0, 1],
-            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
-            [1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1],
-            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 0, 0, 1],
-            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
-            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
-            [1, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 1],
-            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
-            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
-            [1, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 1],
-            [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
-        ]
-    },
-    // Level 9 - New: Spikes and Enemy
-    {
-        map: [
-            [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
-            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
-            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 0, 1],
-            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1],
-            [1, 0, 0, 5, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 1],
-            [1, 0, 0, 1, 1, 1, 0, 0, 0, 0, 3, 0, 0, 0, 1, 1, 1, 1, 1, 1],
-            [1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 1],
-            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0, 1],
-            [1, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 0, 0, 1, 1, 1, 0, 1],
-            [1, 1, 1, 1, 1, 0, 0, 0, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
-            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 0, 0, 3, 1],
-            [1, 0, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1],
-            [1, 0, 3, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 1],
-            [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
-        ]
-    },
-    // Level 10 - New: Finale with Boss
-    {
-        map: [
-            [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
-            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
-            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
-            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
-            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
-            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
-            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
-            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
-            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
-            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
-            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
-            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
-            [1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 1],
-            [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
-        ]
-    }
-];
+// Level data is now in levels.js
 
 let currentLevelMap;
 let currentLevelWidth;
@@ -409,7 +384,7 @@ const keys = { ArrowLeft: false, ArrowRight: false, ArrowUp: false, Space: false
 const pressedKeys = {};
 
 window.addEventListener('keydown', (e) => {
-    if (e.code === 'Enter' && (currentGameState === gameStates.HOME || currentGameState === gameStates.GAME_OVER)) {
+    if ((e.code === 'Enter' || e.code === 'Space') && (currentGameState === gameStates.HOME || currentGameState === gameStates.GAME_OVER)) {
         startGame();
     } else if (e.code === 'Escape') {
         if (currentGameState === gameStates.PLAYING) {
@@ -448,7 +423,7 @@ function setupTouchControls() {
         if (currentGameState === gameStates.HOME || currentGameState === gameStates.GAME_OVER) {
             startGame();
         } else if (currentGameState === gameStates.PLAYING && e.target === canvas) {
-             shootBullet();
+            shootBullet();
         }
     });
 }
@@ -464,16 +439,17 @@ function setupPauseControls() {
         if (currentGameState !== gameStates.PAUSED) return;
 
         const rect = canvas.getBoundingClientRect();
-        const mouseX = e.clientX - rect.left;
-        const mouseY = e.clientY - rect.top;
+        // UPDATED: Scale mouse coordinates to match the canvas's internal resolution (800x500)
+        const scaleX = canvas.width / rect.width;
+        const scaleY = canvas.height / rect.height;
+        const mouseX = (e.clientX - rect.left) * scaleX;
+        const mouseY = (e.clientY - rect.top) * scaleY;
 
-        // Check if Resume button is clicked
         if (mouseX >= resumeBtn.x && mouseX <= resumeBtn.x + resumeBtn.width &&
             mouseY >= resumeBtn.y && mouseY <= resumeBtn.y + resumeBtn.height) {
             currentGameState = gameStates.PLAYING;
         }
 
-        // Check if Exit button is clicked
         if (mouseX >= exitBtn.x && mouseX <= exitBtn.x + exitBtn.width &&
             mouseY >= exitBtn.y && mouseY <= exitBtn.y + exitBtn.height) {
             currentGameState = gameStates.HOME;
@@ -484,15 +460,23 @@ function setupPauseControls() {
 function shootBullet() {
     if (bullets > 0) {
         bullets--;
-        const bulletDirection = player.direction;
         const bulletX = player.x + (player.width / 2);
         const bulletY = player.y + (player.height / 2);
-        activeBullets.push(new Bullet(bulletX, bulletY, bulletDirection));
+        activeBullets.push(new Bullet(bulletX, bulletY, player.direction));
 
         if (assets.gun_sound) {
             assets.gun_sound.currentTime = 0;
             assets.gun_sound.play();
         }
+    }
+}
+
+// UPDATED: Simplified walking sound logic
+function playWalkSound() {
+    const soundToPlay = assets.sound_walk_dirt1;
+    if (soundToPlay && soundToPlay.readyState >= 3) {
+        soundToPlay.currentTime = 0;
+        soundToPlay.play();
     }
 }
 
@@ -502,35 +486,62 @@ function loadLevel(levelIndex) {
     const levelData = originalLevels[levelIndex];
     currentLevelMap = JSON.parse(JSON.stringify(levelData.map));
     currentLevelWidth = currentLevelMap[0].length * TILE_SIZE;
+    
+    // UPDATED: Load the spawn point for the level
+    currentSpawnPoint = levelData.spawn || { row: 1, col: 1 }; // Fallback to default
+
     dynamicObjects = [];
     activeBullets = [];
+    enemyBullets = [];
+    particles = [];
+
     for (let row = 0; row < currentLevelMap.length; row++) {
         for (let col = 0; col < currentLevelMap[row].length; col++) {
-            if (currentLevelMap[row][col] === 5) {
-                dynamicObjects.push({ x: col * TILE_SIZE, y: row * TILE_SIZE, width: TILE_SIZE, height: TILE_SIZE, type: 'enemy', speed: 1, direction: 1, startX: col * TILE_SIZE, range: 120 });
+            const tile = currentLevelMap[row][col];
+            const x = col * TILE_SIZE;
+            const y = row * TILE_SIZE;
+
+            if (tile === 5) { // Patrolling Enemy
+                dynamicObjects.push({ type: 'enemy_patrol', x: x, y: y, width: TILE_SIZE, height: TILE_SIZE, speed: 1, direction: 1, startX: x, range: 120 });
+                currentLevelMap[row][col] = 0;
+            } else if (tile === 8) { // Moving Platform
+                dynamicObjects.push({ type: 'moving_platform', x: x, y: y, width: TILE_SIZE * 2, height: TILE_SIZE / 2, speed: 1, direction: 1, startX: x, range: 160, velocityX: 1 });
+                currentLevelMap[row][col] = 0;
+            } else if (tile === 9) { // Shooter Enemy
+                dynamicObjects.push({ type: 'enemy_shooter', x: x, y: y, width: TILE_SIZE, height: TILE_SIZE, shootCooldown: 120, direction: -1 });
                 currentLevelMap[row][col] = 0;
             }
         }
     }
-    resetPlayer();
+    resetPlayerPosition();
 }
-function resetPlayer() {
-    player.x = 80;
-    player.y = 80;
+
+// UPDATED: Now uses the dynamic spawn point
+function resetPlayerPosition() {
+    player.x = currentSpawnPoint.col * TILE_SIZE;
+    player.y = currentSpawnPoint.row * TILE_SIZE;
     player.velocityX = 0;
     player.velocityY = 0;
     player.direction = 1;
 }
+
+function restartLevel() {
+    player.health = player.maxHealth;
+    loadLevel(currentLevelIndex);
+}
+
 function startGame() {
     score = 0;
-    bullets = 0;
+    bullets = 1; // Player starts with 1 bullet
     currentLevelIndex = 0;
+    player.health = player.maxHealth;
     loadLevel(currentLevelIndex);
     currentGameState = gameStates.PLAYING;
 }
 function nextLevel() {
     currentLevelIndex++;
     if (currentLevelIndex >= originalLevels.length) {
+        gameOverMessage = 'You Win!';
         currentGameState = gameStates.GAME_OVER;
     } else {
         loadLevel(currentLevelIndex);
@@ -539,103 +550,83 @@ function nextLevel() {
 
 // -- DRAWING FUNCTIONS --
 function drawGame() {
-    const startCol = Math.floor(camera.x / TILE_SIZE);
+    const camX = camera.x + (camera.shakeDuration > 0 ? (Math.random() - 0.5) * camera.shakeMagnitude : 0);
+    const camY = camera.y + (camera.shakeDuration > 0 ? (Math.random() - 0.5) * camera.shakeMagnitude : 0);
+
+    const startCol = Math.floor(camX / TILE_SIZE);
     const endCol = Math.min(startCol + Math.ceil(canvas.width / TILE_SIZE) + 1, currentLevelMap[0].length);
     for (let row = 0; row < currentLevelMap.length; row++) {
         for (let col = startCol; col < endCol; col++) {
             const tile = currentLevelMap[row][col];
-            const tileX = col * TILE_SIZE - camera.x;
-            const tileY = row * TILE_SIZE - camera.y;
+            const tileX = col * TILE_SIZE - camX;
+            const tileY = row * TILE_SIZE - camY;
             if (tile === 0) continue;
 
-            if (tile === 1) {
-                if (assets.wall && assets.wall.complete && assets.wall.naturalHeight !== 0) {
-                    ctx.drawImage(assets.wall, tileX, tileY, TILE_SIZE, TILE_SIZE);
-                } else {
-                    ctx.fillStyle = '#ff0000';
-                    ctx.fillRect(tileX, tileY, TILE_SIZE, TILE_SIZE);
-                }
-            } else if (tile === 2) {
-                if (assets.goal && assets.goal.complete && assets.goal.naturalHeight !== 0) {
-                    ctx.drawImage(assets.goal, tileX, tileY, TILE_SIZE, TILE_SIZE);
-                } else {
-                    ctx.fillStyle = '#654321';
-                    ctx.fillRect(tileX + 10, tileY + 10, TILE_SIZE - 20, TILE_SIZE - 20);
-                }
-            } else if (tile === 3) {
-                const coinSize = TILE_SIZE * 0.5;
-                const offset = (TILE_SIZE - coinSize) / 2;
-                if (assets.coin && assets.coin.complete && assets.coin.naturalHeight !== 0) {
-                    ctx.drawImage(assets.coin, tileX + offset, tileY + offset, coinSize, coinSize);
-                } else {
-                    ctx.fillStyle = '#ffff00';
-                    ctx.beginPath();
-                    ctx.arc(tileX + TILE_SIZE / 2, tileY + TILE_SIZE / 2, (TILE_SIZE / 3) * 0.8, 0, Math.PI * 2);
-                    ctx.fill();
-                }
-            } else if (tile === 4) {
-                if (assets.gun && assets.gun.complete && assets.gun.naturalHeight !== 0) {
-                    ctx.drawImage(assets.gun, tileX, tileY, TILE_SIZE, TILE_SIZE);
-                } else {
-                    ctx.fillStyle = '#8e44ad';
-                    ctx.fillRect(tileX + 10, tileY + 10, TILE_SIZE - 20, TILE_SIZE - 20);
-                }
-            } else if (tile === 6) {
-                if (assets.spikes && assets.spikes.complete && assets.spikes.naturalHeight !== 0) {
-                    ctx.drawImage(assets.spikes, tileX, tileY, TILE_SIZE, TILE_SIZE);
-                } else {
-                    ctx.fillStyle = '#95a5a6';
-                    ctx.beginPath();
-                    for (let i = 0; i < TILE_SIZE; i += 10) {
-                        ctx.moveTo(tileX + i, tileY + TILE_SIZE);
-                        ctx.lineTo(tileX + i + 5, tileY);
-                        ctx.lineTo(tileX + i + 10, tileY + TILE_SIZE);
-                    }
-                    ctx.closePath();
-                    ctx.fill();
-                }
-            } else if (tile === 7) {
-                if (assets.phantom_wall && assets.phantom_wall.complete && assets.phantom_wall.naturalHeight !== 0) {
-                    ctx.drawImage(assets.phantom_wall, tileX, tileY, TILE_SIZE, TILE_SIZE);
-                } else {
-                    ctx.fillStyle = '#ffc0cb';
-                    ctx.fillRect(tileX, tileY, TILE_SIZE, TILE_SIZE);
-                }
+            let asset = null;
+            switch(tile) {
+                case 1: asset = assets.wall; break;
+                case 2: asset = assets.goal; break;
+                case 3: asset = assets.coin; break;
+                case 4: asset = assets.gun; break;
+                case 6: asset = assets.spikes; break;
+                case 7: asset = assets.phantom_wall; break;
+            }
+            if (asset && asset.complete && asset.naturalHeight !== 0) {
+                ctx.drawImage(asset, tileX, tileY, TILE_SIZE, TILE_SIZE);
             }
         }
     }
 
     dynamicObjects.forEach(obj => {
-        if (obj.type === 'enemy') {
-            if (assets.enemy && assets.enemy.complete && assets.enemy.naturalHeight !== 0) {
-                const enemyX = obj.x - camera.x;
-                const enemyY = obj.y - camera.y;
-                if (obj.direction === 1) {
-                    ctx.drawImage(assets.enemy, enemyX, enemyY, obj.width, obj.height);
-                } else {
-                    ctx.save();
-                    ctx.translate(enemyX + obj.width, enemyY);
-                    ctx.scale(-1, 1);
-                    ctx.drawImage(assets.enemy, 0, 0, obj.width, obj.height);
-                    ctx.restore();
-                }
+        let asset = null;
+        if (obj.type === 'enemy_patrol') asset = assets.enemy;
+        if (obj.type === 'enemy_shooter') asset = assets.enemy_shooter;
+        if (obj.type === 'moving_platform') asset = assets.platform_move;
+
+        const objX = obj.x - camX;
+        const objY = obj.y - camY;
+
+        if (asset && asset.complete && asset.naturalHeight !== 0) {
+            if (obj.direction === 1) {
+                ctx.drawImage(asset, objX, objY, obj.width, obj.height);
             } else {
-                ctx.fillStyle = '#c0392b';
-                ctx.fillRect(obj.x - camera.x, obj.y - camera.y, obj.width, obj.height);
+                ctx.save();
+                ctx.translate(objX + obj.width, objY);
+                ctx.scale(-1, 1);
+                ctx.drawImage(asset, 0, 0, obj.width, obj.height);
+                ctx.restore();
             }
+        } else {
+             ctx.fillStyle = '#c0392b';
+             ctx.fillRect(obj.x - camX, obj.y - camY, obj.width, obj.height);
         }
     });
 
-    activeBullets.forEach(bullet => bullet.draw());
+    activeBullets.forEach(bullet => bullet.draw(ctx, {x: camX, y: camY}));
+    enemyBullets.forEach(bullet => bullet.draw(ctx, {x: camX, y: camY}));
+    particles.forEach(p => p.draw(ctx, {x: camX, y: camY}));
 
-    player.draw(ctx, assets, camera);
+    player.draw(ctx, assets, {x: camX, y: camY});
 
+    // Draw UI on top
     ctx.fillStyle = '#fff';
     ctx.font = '24px Arial';
     ctx.textAlign = 'left';
     ctx.fillText(`Score: ${score}`, 10, 30);
     ctx.fillText(`Level: ${currentLevelIndex + 1}`, canvas.width - 120, 30);
     drawBulletCount();
+    drawHealthUI();
+}
+
+function drawHealthUI() {
+    const heartSize = 30;
+    for (let i = 0; i < player.maxHealth; i++) {
+        if (i < player.health) {
+             if (assets.heart && assets.heart.complete) {
+                ctx.drawImage(assets.heart, 10 + (i * (heartSize + 5)), 40, heartSize, heartSize);
+             }
+        }
+    }
 }
 
 function drawBulletCount() {
@@ -645,51 +636,101 @@ function drawBulletCount() {
     ctx.fillText(`Bullets: ${bullets}`, canvas.width / 2, 30);
 }
 
-function drawHomeScreen() {
-    ctx.globalAlpha = 1.0;
-    ctx.fillStyle = '#000';
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
+// --- REFACTORED HOME SCREEN LOGIC (FOR PERFORMANCE) ---
+let preRenderedBackground = null;
+let backgroundY = 0;
+const backgroundScrollSpeed = 0.5;
 
+function initHomeScreenBackground() {
+    // Create an off-screen canvas for pre-rendering
+    preRenderedBackground = document.createElement('canvas');
+    preRenderedBackground.width = canvas.width;
+    preRenderedBackground.height = canvas.height * 2; // Twice the height for seamless scrolling
+    const bgCtx = preRenderedBackground.getContext('2d');
+
+    // Draw the sky
+    bgCtx.fillStyle = '#87CEEB';
+    bgCtx.fillRect(0, 0, preRenderedBackground.width, preRenderedBackground.height);
+    
+    // Draw the blurred, faded bricks onto it once
+    if (assets.wall && assets.wall.complete) {
+        bgCtx.save();
+        bgCtx.filter = 'blur(3px)';
+        bgCtx.globalAlpha = 0.4;
+        // Draw twice the number of bricks to fill the double-height canvas
+        for (let i = 0; i < 60; i++) { 
+            const x = Math.random() * preRenderedBackground.width;
+            const y = Math.random() * preRenderedBackground.height;
+            const size = Math.random() * 50 + 20;
+            bgCtx.drawImage(assets.wall, x, y, size, size);
+        }
+        bgCtx.restore();
+    }
+}
+
+function updateHomeScreenBackground() {
+    // Scroll the Y-position of the background
+    backgroundY += backgroundScrollSpeed;
+    // If it has scrolled its entire height, reset to 0 to create a loop
+    if (backgroundY >= canvas.height) {
+        backgroundY = 0;
+    }
+}
+
+function drawHomeScreen() {
+    // If the background hasn't been rendered yet, do a simple fallback
+    if (!preRenderedBackground) {
+        ctx.fillStyle = '#87CEEB';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+    } else {
+        // Draw the pre-rendered canvas twice to create a seamless vertical scroll
+        ctx.drawImage(preRenderedBackground, 0, backgroundY);
+        ctx.drawImage(preRenderedBackground, 0, backgroundY - preRenderedBackground.height);
+    }
+
+    // Draw UI text on top
     ctx.fillStyle = '#fff';
+    
+    // Draw the title
     ctx.font = '50px Arial';
     ctx.textAlign = 'center';
-    ctx.fillText('The 2D Platformer', canvas.width / 2, canvas.height / 2 - 40);
+    ctx.fillText('The Platformer', canvas.width / 2, canvas.height / 2 - 20);
 
+    // Draw the prompt
     ctx.font = '24px Arial';
-    ctx.fillText('Press Enter or Tap Screen to Start', canvas.width / 2, canvas.height / 2 + 20);
+    ctx.fillText('Press Enter, Space, or Tap Screen to Start', canvas.width / 2, canvas.height / 2 + 40);
 }
+
 
 function drawGameOverScreen() {
     ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
-
     ctx.fillStyle = '#fff';
     ctx.font = '50px Arial';
     ctx.textAlign = 'center';
-    ctx.fillText('You Win!', canvas.width / 2, canvas.height / 2 - 40);
-
-    ctx.font = '30px Arial';
-    ctx.fillText(`Final Score: ${score}`, canvas.width / 2, canvas.height / 2 + 20);
+    ctx.fillText(gameOverMessage, canvas.width / 2, canvas.height / 2 - 40);
+    
+    if (gameOverMessage === 'You Win!') {
+        ctx.font = '30px Arial';
+        ctx.fillText(`Final Score: ${score}`, canvas.width / 2, canvas.height / 2 + 20);
+    }
 
     ctx.font = '20px Arial';
-    ctx.fillText('Press Enter or Tap Screen to Play Again', canvas.width / 2, canvas.height / 2 + 70);
+    ctx.fillText('Press Enter, Space, or Tap Screen to Play Again', canvas.width / 2, canvas.height / 2 + 70);
 }
 
 function drawPauseMenu() {
     ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
-
     ctx.fillStyle = '#fff';
     ctx.font = '50px Arial';
     ctx.textAlign = 'center';
     ctx.fillText('Paused', canvas.width / 2, canvas.height / 2 - 100);
-
     ctx.fillStyle = '#333';
     ctx.fillRect(resumeBtn.x, resumeBtn.y, resumeBtn.width, resumeBtn.height);
     ctx.fillStyle = '#fff';
     ctx.font = '30px Arial';
     ctx.fillText('Resume', canvas.width / 2, resumeBtn.y + 35);
-
     ctx.fillStyle = '#333';
     ctx.fillRect(exitBtn.x, exitBtn.y, exitBtn.width, exitBtn.height);
     ctx.fillStyle = '#fff';
@@ -700,14 +741,55 @@ function drawPauseMenu() {
 
 // -- COLLISION & UPDATE LOGIC --
 function checkCollision(objA, objB) { return (objA.x < objB.x + objB.width && objA.x + objA.width > objB.x && objA.y < objB.y + objB.height && objA.y + objA.height > objB.y); }
-function updateDynamicObjects() { dynamicObjects.forEach(obj => { if (obj.type === 'enemy') { obj.x += obj.speed * obj.direction; if (obj.x > obj.startX + obj.range || obj.x < obj.startX) obj.direction *= -1; } }); }
-function updateCamera() { camera.x = player.x - canvas.width / 2; if (camera.x < 0) camera.x = 0; if (camera.x > currentLevelWidth - canvas.width) camera.x = currentLevelWidth - canvas.width; }
+
+function spawnParticles(x, y, amount, color) {
+    for (let i = 0; i < amount; i++) {
+        particles.push(new Particle(x, y, color, 8, 40));
+    }
+}
+
+function triggerScreenShake(duration, magnitude) {
+    camera.shakeDuration = duration;
+    camera.shakeMagnitude = magnitude;
+}
+
+
+function updateDynamicObjects() {
+    dynamicObjects.forEach(obj => {
+        if (obj.type === 'enemy_patrol' || obj.type === 'moving_platform') {
+            obj.x += obj.speed * obj.direction;
+            obj.velocityX = obj.speed * obj.direction;
+            if (obj.x > obj.startX + obj.range || obj.x < obj.startX) {
+                obj.direction *= -1;
+            }
+        } else if (obj.type === 'enemy_shooter') {
+            obj.shootCooldown--;
+            obj.direction = (player.x < obj.x) ? -1 : 1;
+            if (obj.shootCooldown <= 0) {
+                const bulletX = obj.x + (obj.width / 2);
+                const bulletY = obj.y + (obj.height / 2);
+                enemyBullets.push(new EnemyBullet(bulletX, bulletY, obj.direction));
+                obj.shootCooldown = 180; 
+            }
+        }
+    });
+}
+
+function updateCamera() {
+    if (camera.shakeDuration > 0) {
+        camera.shakeDuration--;
+    }
+
+    camera.x = player.x - canvas.width / 2;
+    if (camera.x < 0) camera.x = 0;
+    if (camera.x > currentLevelWidth - canvas.width) camera.x = currentLevelWidth - canvas.width;
+}
 
 function handleTileCollisions() {
     for (let row = 0; row < currentLevelMap.length; row++) {
         for (let col = 0; col < currentLevelMap[row].length; col++) {
             const tile = currentLevelMap[row][col];
-            if (tile === 0 || tile === 7) continue;
+            if (tile === 0 || tile === 1 || tile === 7) continue;
 
             const tileX = col * TILE_SIZE;
             const tileY = row * TILE_SIZE;
@@ -715,21 +797,23 @@ function handleTileCollisions() {
 
             if (checkCollision(player, tileBox)) {
                 switch (tile) {
-                    case 1:
-                        break;
-                    case 2:
+                    case 2: // Goal
                         nextLevel();
                         return;
-                    case 3:
+                    case 3: // Coin
                         score += 100;
                         currentLevelMap[row][col] = 0;
+                        if (assets.sound_collect_coin) {
+                            assets.sound_collect_coin.currentTime = 0;
+                            assets.sound_collect_coin.play();
+                        }
                         break;
-                    case 4:
-                        bullets += 3;
+                    case 4: // Gun
+                        bullets += 5;
                         currentLevelMap[row][col] = 0;
                         break;
-                    case 6:
-                        resetPlayer();
+                    case 6: // Spikes
+                        player.takeDamage(1);
                         return;
                 }
             }
@@ -737,34 +821,48 @@ function handleTileCollisions() {
     }
 }
 
-// New: State machine object
 const gameStates = {
     HOME: {
-        update: () => { /* No update needed for home screen */ },
+        update: () => {
+            updateHomeScreenBackground(); // Animate the background
+        },
         draw: drawHomeScreen
     },
     PLAYING: {
         update: () => {
-            player.update(currentLevelMap, TILE_SIZE);
+            player.update(currentLevelMap, TILE_SIZE, dynamicObjects);
             handleTileCollisions();
-            
+
             dynamicObjects.forEach(obj => {
-                if (checkCollision(player, obj)) {
-                    resetPlayer();
-                    return;
+                if (obj.type.includes('enemy') && checkCollision(player, obj)) {
+                    player.takeDamage(1);
                 }
             });
 
             activeBullets.forEach(bullet => bullet.update());
             activeBullets = activeBullets.filter(bullet => {
-                const hitEnemyIndex = dynamicObjects.findIndex(enemy => checkCollision(bullet, enemy));
+                const hitEnemyIndex = dynamicObjects.findIndex(enemy => enemy.type.includes('enemy') && checkCollision(bullet, enemy));
                 if (hitEnemyIndex !== -1) {
                     score += 250;
+                    const enemy = dynamicObjects[hitEnemyIndex];
+                    spawnParticles(enemy.x + enemy.width/2, enemy.y + enemy.height/2, 15, '#c0392b');
                     dynamicObjects.splice(hitEnemyIndex, 1);
+                    return false; 
+                }
+                return bullet.x > -TILE_SIZE && bullet.x < currentLevelWidth;
+            });
+            
+            enemyBullets.forEach(bullet => bullet.update());
+            enemyBullets = enemyBullets.filter(bullet => {
+                if (checkCollision(bullet, player)) {
+                    player.takeDamage(1);
                     return false;
                 }
                 return bullet.x > -TILE_SIZE && bullet.x < currentLevelWidth;
             });
+            
+            particles.forEach(p => p.update());
+            particles = particles.filter(p => p.life > 0);
 
             updateDynamicObjects();
             updateCamera();
@@ -775,7 +873,7 @@ const gameStates = {
         }
     },
     PAUSED: {
-        update: () => { /* No update needed for pause menu */ },
+        update: () => {},
         draw: () => {
             drawGame();
             drawPauseMenu();
@@ -783,7 +881,7 @@ const gameStates = {
         }
     },
     GAME_OVER: {
-        update: () => { /* No update needed for game over screen */ },
+        update: () => {},
         draw: () => {
             drawGameOverScreen();
             pauseBtn.classList.add('hidden');
@@ -796,18 +894,21 @@ let currentGameState = gameStates.HOME;
 // -- MAIN GAME LOOP --
 function gameLoop() {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-
     currentGameState.update();
     currentGameState.draw();
-
     requestAnimationFrame(gameLoop);
 }
 
 // --- INITIALIZE ---
+// Note: We call initHomeScreenBackground() after assets are loaded.
 pauseBtn.classList.add('hidden');
 setupTouchControls();
 setupPauseControls();
-loadAssets(gameLoop, (errorMsg) => {
+loadAssets(() => {
+    // This function runs after all assets are loaded
+    initHomeScreenBackground(); // Now safe to call this
+    gameLoop();
+}, (errorMsg) => {
     console.error("Game failed to initialize due to asset loading error.");
     alert(errorMsg);
 });
